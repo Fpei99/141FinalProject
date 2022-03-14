@@ -1,0 +1,426 @@
+---
+title: "Progress Project"
+author: "Fei Pei"
+date: "`r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  html_document:
+    df_print: paged
+---
+
+  1. Abstract
+  
+In this report we will introduce the data set and the variables we are using to build models that can tell us some information about the data. In addition, we will introduce the mathematical form and basic function of the model established in this report. So that readers can have a clearer understanding of the research methods reported and can better analyze the conclusions drawn from this study.
+
+This report firstly groups the epidemic data of various countries, compares the macro data of the epidemic situation in various countries, and focuses on the observation of the holiday effect in the epidemic situation. In order to facilitate the discovery of commonalities in the epidemic data of various countries, the cluster analysis of the epidemic data of various countries was carried out on a country-by-country basis, and similar countries were regarded as one major category, and a representative country was selected from each major category to establish an ARIMA model for the number of deaths. Conduct predictive analytics.
+
+  2. Introduction
+  
+The main interests of the research in this report lie in the following two points:
+1. Will holidays and weekends have an important impact on the development of the epidemic?
+2. The important factor affecting the development of the epidemic is geographic region, economic strength, and epidemic prevention policies? If it is the latter, predict and analyze the epidemic development trend of every type of countries in the future.
+
+For the first question, I separate holidays (including weekends) from weekday data from the data. And I separately checked the average of new cases, cumulative cases, new deaths, and cumulative deaths on holidays and working days, and found that the epidemic data on holidays is indeed higher than the epidemic data on working days. But the gap between the two is not very large, so the research interest is mainly focused on the second question.
+
+For the second question, I first conduct research after averaging the data by WHO Region. The results show that regional epidemic trends are not well differentiated. Therefore, I performed k-means cluster analysis on the epidemic data of various countries, determined the number of clusters according to the elbow method, and finally divided the 237 countries into 5 types. The results show that there are obvious gaps between the five types, indicating that the clustering method effectively divides countries according to the development of the epidemic. Finally, build an ARIMA model for each type of country, , and analyze the robustness of the model to predict and reasonably analyze new cases numbers.
+  
+  3. Background
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#load library
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(reshape2)
+library(ggthemes)
+library(tis)
+library(timeDate)
+library(lubridate)
+library(devtools)
+library(gganimate)
+library(grid)
+library(Rmisc)
+library(plyr)
+library(fpc)
+library(forecast)
+library(tseries)
+``` 
+
+The project is about the WHO COVID-19 data which is maintained by WHO and updated constantly. The dataset includes the data from 2020-01-03 to 2022-02-18, there are 184386 records from this raw data. The dataset includes 8 columns, the first column is the reporting time, the second column is Two characters' country code, the third column is Full name of the country, and the fourth column is the division of geographic regions, including African Region (AFRO), Region of the Americas (AMRO), South-East Asian Region (SEARO), European Region (EURO), Eastern Mediterranean Region (EMRO), Western Pacific Region (WPR) and Other. The fifth to eighth columns are specific epidemic data, divided into To separate new cases, cumulative cases, new deaths, cumulative deaths.
+
+```{r message=FALSE, warning=FALSE, paged.print=TRUE}
+#读入数据
+covid = read.csv("https://covid19.who.int/WHO-COVID-19-global-data.csv",header = TRUE,encoding = "UTF-8")
+#重命名第一列
+covidNames=colnames(covid)
+covidNames[1]="Date_reported"
+colnames(covid)=covidNames
+#将第一列处理为时间变量
+covid$Date_reported=as.Date(covid$Date_reported)
+#统计国家数量
+countryNums=length(unique(covid$Country))
+#统计地区数量
+regionNums=length(unique(covid$WHO_region))
+#统计时间跨度
+maxTime = max(covid$Date_reported)
+minTime = min(covid$Date_reported)
+timeLong = maxTime-minTime
+res<- data.frame(Country=countryNums,Region=regionNums,Time=timeLong)
+kable(res)
+```
+
+In addition, as can be seen from the above table, the dataset includes 7 geographic regions, 237 countries, and 777 days of epidemic data.
+
+```{r message=FALSE, warning=FALSE}
+kable(summary(covid))
+```
+
+  
+  4. Descriptive Analysis
+  
+First, look at the epidemic data of various regions from a macro perspective.
+The average change trend of epidemic data is plotted according to time, as shown in the following figure.
+```{r fig.height=6, fig.width=14}
+#按照时间来统计数据的均值
+dataColName = c("New_cases","Cumulative_cases","New_deaths","Cumulative_deaths")
+TimeMean=aggregate(covid[dataColName],by=list(covid$Date_reported),FUN=mean)
+chart1 <- ggplot(TimeMean, aes(Group.1,New_cases,colour = 'red')) + geom_line()+xlab("Date")
+chart2 <- ggplot(TimeMean, aes(Group.1,Cumulative_cases,colour = 'red')) + geom_line()+xlab("Date")
+chart3 <- ggplot(TimeMean, aes(Group.1,New_deaths,colour = 'red')) + geom_line()+xlab("Date")
+chart4 <- ggplot(TimeMean, aes(Group.1,Cumulative_deaths,colour = 'red')) + geom_line()+xlab("Date")
+multiplot(chart1,chart2,chart3,chart4,cols=2)
+```
+Judging from the overall data, the new cases of the global epidemic are basically in a stage of decline, but the epidemic situation is still relatively severe, and it is still necessary to focus on and strictly prevent and control.
+In addition, divide the epidemic data according to different regions and observe the mean distribution.The average of new cases, cumulative cases, new deaths, and confirmed deaths in each region is as follows:
+```{r message=FALSE, warning=FALSE}
+#按照地区来统计数据的均值
+dataColName = c("New_cases","Cumulative_cases","New_deaths","Cumulative_deaths")
+regionMean=aggregate(covid[dataColName],by=list(covid$WHO_region),FUN=mean)
+long_regionMean <- melt(regionMean, id="Group.1")
+kable(regionMean)
+```
+The results showed that dividing countries by geographic regions did not do a good job of dividing the regions affected by the outbreak. In particular, the other group has only one observation value, which is not objective enough. It can also be seen from the column chart that although the various regions can be clearly divided according to the cumulative cases, the changes of the other three variables are not very different.
+
+```{r fig.height=6, fig.width=14, message=FALSE, warning=FALSE}
+ggplot(long_regionMean,aes(Group.1,value,fill=variable))+
+geom_bar(stat="identity",position="dodge")+
+ggtitle("Mean Epidemic Data in Different Region")+
+theme_wsj()+
+scale_fill_wsj("rgby", "")
+```
+
+During holidays (including weekends), the mobility of people is relatively large, which will increase the possibility of the spread of the epidemic. Therefore, the epidemic data is divided into holidays and working days.
+
+```{r fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+#提取周末和节假日
+hld=holidaysBetween(20200101,20220301,businessOnly=FALSE)
+hld = ymd(hld)
+weekend = unique(covid$Date_reported[isWeekend(covid$Date_reported)])
+hldAndWeekend = unique(c(hld,weekend))
+hldAndWeekend=as.character(hldAndWeekend)
+```
+
+```{r}
+holidayRes = data.frame()
+for (item in hldAndWeekend){
+  holidayAndWeekend =filter(covid,Date_reported==item)
+  holidayRes=rbind(holidayRes,holidayAndWeekend)
+}
+weeksRes=setdiff(covid,holidayRes)
+```
+Then check the mean distribution of the divided data separately, and draw a column chart as follows.
+```{r}
+#按照地区来统计节假日数据的均值
+holidayRegionMean=aggregate(holidayRes[dataColName],by=list(holidayRes$WHO_region),FUN=mean)
+long_holidayRegionMean <- melt(holidayRegionMean, id="Group.1")
+kable(holidayRegionMean)
+```
+
+
+```{r fig.height=6, fig.width=14}
+ggplot(long_holidayRegionMean,aes(Group.1,value,fill=variable))+
+geom_bar(stat="identity",position="dodge")+
+ggtitle("Mean Holiday Epidemic Data in Different Region")+
+theme_wsj()+
+scale_fill_wsj("rgby", "")
+```
+```{r}
+#按照地区来统计非节假日数据的均值
+weeksRegionMean=aggregate(weeksRes[dataColName],by=list(weeksRes$WHO_region),FUN=mean)
+long_weeksRegionMean <- melt(weeksRegionMean, id="Group.1")
+kable(weeksRegionMean)
+```
+
+```{r fig.height=6, fig.width=14}
+ggplot(long_weeksRegionMean,aes(Group.1,value,fill=variable))+
+geom_bar(stat="identity",position="dodge")+
+ggtitle("Mean weeks Epidemic Data in Different Region")+
+theme_wsj()+
+scale_fill_wsj("rgby", "")
+```
+As can be seen from the bar chart and table, the epidemic data during the holidays did increase, but it did not increase significantly.
+
+Next, select a country from each of the seven regions as a representative to observe the relationship between new cases and new deaths.
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE, paged.print=TRUE}
+Algeria=subset(covid,Country=="Algeria",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+theme_set(theme_bw())
+p1=ggplot(Algeria,
+ aes(x =New_cases, y=New_deaths, colour = Country)) +
+ geom_point(show.legend = FALSE, alpha = 0.7) +
+ scale_color_viridis_d() +
+ scale_size(range = c(2, 12)) +
+ scale_x_log10() +
+ labs(x = "Number of Algeria's new cases", y = "Number of Algeria's new deaths")
+animate(p1+transition_time(Date_reported)+labs(title = "Day: {frame_time}")+shadow_wake(wake_length = 0.1, alpha = FALSE)+enter_fade()+exit_fade())
+```
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE, paged.print=TRUE}
+America=subset(covid,Country=="United States of America",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+theme_set(theme_bw())
+p2=ggplot(America,
+ aes(x =New_cases, y=New_deaths, colour = Country)) +
+ geom_point(show.legend = FALSE, alpha = 0.7) +
+ scale_color_viridis_d() +
+ scale_size(range = c(2, 12)) +
+ scale_x_log10() +
+ labs(x = "Number of America's new cases", y = "Number of America's new deaths")
+animate(p2+transition_time(Date_reported)+labs(title = "Day: {frame_time}")+shadow_wake(wake_length = 0.1, alpha = FALSE)+enter_fade()+exit_fade())
+```
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE, paged.print=TRUE}
+India=subset(covid,Country=="India",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+theme_set(theme_bw())
+p3=ggplot(India,
+ aes(x =New_cases, y=New_deaths, colour = Country)) +
+ geom_point(show.legend = FALSE, alpha = 0.7) +
+ scale_color_viridis_d() +
+ scale_size(range = c(2, 12)) +
+ scale_x_log10() +
+ labs(x = "Number of India's new cases", y = "Number of India's new deaths")
+animate(p3+transition_time(Date_reported)+labs(title = "Day: {frame_time}")+shadow_wake(wake_length = 0.1, alpha = FALSE)+enter_fade()+exit_fade())
+```
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE, paged.print=TRUE}
+China=subset(covid,Country=="China",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+theme_set(theme_bw())
+p4=ggplot(China,
+ aes(x =New_cases, y=New_deaths, colour = Country)) +
+ geom_point(show.legend = FALSE, alpha = 0.7) +
+ scale_color_viridis_d() +
+ scale_size(range = c(2, 12)) +
+ scale_x_log10() +
+ labs(x = "Number of China's new cases", y = "Number of China's new deaths")
+animate(p4+transition_time(Date_reported)+labs(title = "Day: {frame_time}")+shadow_wake(wake_length = 0.1, alpha = FALSE)+enter_fade()+exit_fade())
+```
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE, paged.print=TRUE}
+UK=subset(covid,Country=="The United Kingdom",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+theme_set(theme_bw())
+p5=ggplot(UK,
+ aes(x =New_cases, y=New_deaths, colour = Country)) +
+ geom_point(show.legend = FALSE, alpha = 0.7) +
+ scale_color_viridis_d() +
+ scale_size(range = c(2, 12)) +
+ scale_x_log10() +
+ labs(x = "Number of UK's new cases", y = "Number of UK's new deaths")
+animate(p5+transition_time(Date_reported)+labs(title = "Day: {frame_time}")+shadow_wake(wake_length = 0.1, alpha = FALSE)+enter_fade()+exit_fade())
+```
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE, paged.print=TRUE}
+Pakistan=subset(covid,Country=="Pakistan",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+theme_set(theme_bw())
+p6=ggplot(Pakistan,
+ aes(x =New_cases, y=New_deaths, colour = Country)) +
+ geom_point(show.legend = FALSE, alpha = 0.7) +
+ scale_color_viridis_d() +
+ scale_size(range = c(2, 12)) +
+ scale_x_log10() +
+ labs(x = "Number of Pakistan's new cases", y = "Number of Pakistan's new deaths")
+animate(p6+transition_time(Date_reported)+labs(title = "Day: {frame_time}")+shadow_wake(wake_length = 0.1, alpha = FALSE)+enter_fade()+exit_fade())
+```
+
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE, paged.print=TRUE}
+Other=subset(covid,Country=="Other",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+theme_set(theme_bw())
+p7=ggplot(Other,
+ aes(x =New_cases, y=New_deaths, colour = Country)) +
+ geom_point(show.legend = FALSE, alpha = 0.7) +
+ scale_color_viridis_d() +
+ scale_size(range = c(2, 12)) +
+ scale_x_log10() +
+ labs(x = "Number of Other's new cases", y = "Number of Other's new deaths")
+animate(p7+transition_time(Date_reported)+labs(title = "Day: {frame_time}")+shadow_wake(wake_length = 0.1, alpha = FALSE)+enter_fade()+exit_fade())
+```
+
+  5. Inferential analysis
+
+In order to explore whether economic strength and epidemic prevention policies are important factors affecting the epidemic situation, cluster analysis was carried out on the epidemic data of various countries. In addition, on the basis of cluster analysis, a country in each category was selected as a representative to build an ARIMA model.
+
+  5.1 Clustering analysis
+  
+  Since cumulative cases and cumulative deaths are the accumulation of new cases and new deaths, it is only necessary to use new cases and new deaths as data for direct clustering.
+  
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE}
+countryNames = unique(covid$Country)
+clusterData = data.frame()
+for (item in countryNames){
+  temp = subset(covid,Country==item,select = c("New_cases","New_deaths"))
+  temp = melt(temp)
+  value=(temp$value)
+  clusterData=rbind(clusterData,value)
+}
+```
+
+The $K$-means clustering algorithm was selected as the classification of the epidemic data. Since the k value of this method needs to be manually set, different k values may produce different results. In order to ensure the objectivity of the research, this report chooses the elbow method to determine the value of k.
+
+```{r fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+# k取2到10，评估K
+K <- 2:10
+round <- 5 # 每次迭代30次，避免局部最优
+rst <- sapply(K, function (i){
+     # print(paste( "K=" ,i))
+     mean(sapply(1:round, function (r){
+         # print(paste( "Round" ,r))
+         result <- kmeans(clusterData, i)
+         stats <- cluster.stats(dist(clusterData), result$cluster)
+         stats$avg.silwidth
+     }))
+})
+plot(K,rst,type= 'l' ,main= 'The relationship between silhouette coefficient and K' , ylab= 'silhouette coefficient' )
+```
+
+The number of clusters is iterated from 2-10 (the number of clusters does not exceed 10, in order to avoid the model being too complicated), and the optimal number of clusters is selected as 5 through the final elbow diagram.
+
+```{r}
+clusterRes=kmeans(clusterData, 5)
+clusterTable = data.frame(Country=countryNames,cluster=clusterRes$cluster)
+```
+ 
+```{r message=FALSE, warning=FALSE}
+clusterCovidTable=merge(covid, clusterTable, by = "Country")
+clusterCovidTable$cluster=as.factor(clusterCovidTable$cluster)
+clusterCovidTable %>%
+group_by(cluster) %>%dplyr::summarise(MeanNewCases=mean(New_cases),MeanCumulativeCases=mean(Cumulative_cases),MeanNewDeaths=mean(New_deaths),MeanCumulativeDeaths=mean(Cumulative_deaths))
+```
+
+The results of the cluster analysis are presented below in tabular form.
+
+```{r message=FALSE, warning=FALSE}
+cluster1=subset(clusterTable,cluster==1)
+kable(cluster1)
+```
+
+```{r message=FALSE, warning=FALSE}
+cluster2=subset(clusterTable,cluster==2)
+kable(cluster2)
+```
+
+```{r message=FALSE, warning=FALSE}
+cluster3=subset(clusterTable,cluster==3)
+kable(cluster3)
+```
+
+```{r message=FALSE, warning=FALSE}
+cluster4=subset(clusterTable,cluster==4)
+kable(cluster4)
+```
+ 
+```{r message=FALSE, warning=FALSE}
+cluster5=subset(clusterTable,cluster==5)
+kable(cluster5)
+```
+
+The results show that the United States and India are divided into one category, some European countries are divided into one category, Australia, Japan and other countries with slightly better economies are also divided into one category, and the rest of the countries are divided into one category.
+  
+  5.2 Prediction analysis
+  
+Next, select a single country from the above five categories as a representative to build an ARIMA model. The model order is automatically determined by the auto.arima function.
+
+```{r fig.height=6, fig.width=10}
+IndiaFit = Arima(India$New_cases,order = c(5,1,5))
+predIndia = forecast(IndiaFit,15)
+IndiaFit
+
+```
+```{r fig.height=6, fig.width=10}
+AmericaFit = Arima(America$New_cases,order = c(5,1,2))
+predAmerica = forecast(AmericaFit,15)
+AmericaFit
+
+```
+  
+```{r fig.height=6, fig.width=10}
+UKFit = Arima(UK$New_cases,order = c(5,1,4))
+UKFit
+
+```
+  
+```{r fig.height=6, fig.width=10}
+AlgeriaFit = Arima(Algeria$New_cases,order = c(2,1,2))
+AlgeriaFit
+
+```
+  
+```{r echo=TRUE, fig.height=6, fig.width=10}
+Poland=subset(covid,Country=="Poland",select = c("Date_reported","Country","New_cases","Cumulative_cases","New_deaths","Cumulative_deaths"))
+PolandFit = Arima(Poland$New_cases,order = c(2,1,2))
+PolandFit
+
+```
+
+```{r echo=TRUE, fig.height=6, fig.width=12, message=FALSE, warning=FALSE}
+par(mfrow = c(2, 3))
+plot(forecast(IndiaFit,15),xlab="India")
+plot(forecast(AmericaFit,15),xlab="America")
+plot(forecast(UKFit,15),xlab="UK")
+plot(forecast(AlgeriaFit,15),xlab="Algeria")
+plot(forecast(PolandFit,15),xlab="Poland")
+```
+
+  
+Judging from the above forecast results, the epidemic situation in India will maintain a rising trend in a short period of time. The epidemic situation in the United States is fluctuating and gradually leveling off. The epidemic in other countries will stabilize under the existing trend. But overall, the situation of the epidemic is still relatively severe, and we need to work together and take it seriously. In particular, a country with a lower economic level like India needs the help of the whole world even more.
+
+
+  6. Sensitivity Analysis
+  
+```{r echo=TRUE, fig.height=6, fig.width=10}
+par(mfrow = c(2, 3))
+plot(IndiaFit$residuals,xlab="India")
+plot(AmericaFit$residuals,xlab="America")
+plot(UKFit$residuals,xlab="UK")
+plot(AlgeriaFit$residuals,xlab="Algeria")
+plot(PolandFit$residuals,xlab="Poland")
+```
+
+From the residual results of each ARIMA model, each prediction model extracts useful information from the data well. The model residuals are basically close to the noise sequence.
+
+```{r echo=TRUE, fig.height=3, fig.width=6}
+par(mfrow = c(4, 3))
+plot(IndiaFit,xlab="India")
+plot(AmericaFit,xlab="America")
+plot(UKFit,xlab="UK")
+plot(AlgeriaFit,xlab="Algeria")
+plot(PolandFit,xlab="Poland")
+```
+
+In addition, it can be seen from the characteristic roots of the models that the characteristic roots of each model are in the unit circle, and the overall effect is relatively good.
+
+  7. Discussion
+  
+  Through holiday effect analysis, cluster analysis, and the establishment of prediction models, the epidemic data was analyzed in detail, and the following conclusions were finally obtained.
+  
+   1. The epidemic will indeed become severe due to the increase in personnel mobility due to holidays. However, since the epidemic has attracted worldwide attention, the gap between holidays and working days does not fluctuate significantly.
+   
+   2. The relationship between the spread of the epidemic and geographical location is not obvious. Countries that are closer geographically will not have unusually close data in terms of epidemic data.
+   
+   3. The epidemic did have different effects because of the different economic levels and anti-epidemic policies of different countries. Therefore, we need to pay attention to the epidemic, actively fight against it, and cannot adopt negative countermeasures.
+   
+   4. The situation of the epidemic will continue to be severe, and we still need to work together to fight the epidemic.
+   
+   There are also suggestions for:
+   
+   1. At the national level, it is still necessary to actively deal with the epidemic and increase investment in medical and health resources.
+   
+   2. At the personal level, we still need to work hard to protect ourselves and not actively flee.
+  
